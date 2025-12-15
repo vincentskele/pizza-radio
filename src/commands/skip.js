@@ -1,24 +1,37 @@
 const { SlashCommandBuilder } = require('discord.js');
-const state = require('../state'); // Import shared state
+const state = require('../state'); // shared state
+
+async function run({ reply }) {
+  try {
+    if (!state.player || !state.queue || state.queue.length === 0) {
+      return reply('There are no songs playing or no songs in the queue.');
+    }
+
+    // Stopping the player will trigger Idle handlers in your other commands (band/mixtape/etc)
+    state.player.stop();
+    return reply('⏭️ Skipped to the next song!');
+  } catch (error) {
+    console.error('Error executing the skip command:', error);
+    return reply('There was an error trying to skip the song.');
+  }
+}
 
 module.exports = {
-    data: new SlashCommandBuilder()
-        .setName('skip')
-        .setDescription('Skips the current song and plays the next one in the queue'),
+  data: new SlashCommandBuilder()
+    .setName('skip')
+    .setDescription('Skips the current song and plays the next one in the queue'),
 
-    async execute(interaction) {
-        try {
-            if (!state.player || state.queue.length === 0) {
-                await interaction.reply('There are no songs playing or no songs in the queue.');
-                return;
-            }
+  // Slash: /skip
+  async execute(interaction) {
+    return run({
+      reply: (payload) => interaction.reply(payload),
+    });
+  },
 
-            // Skip the current song by stopping the player
-            state.player.stop();
-            await interaction.reply('⏭️ Skipped to the next song!');
-        } catch (error) {
-            console.error('Error executing the skip command:', error);
-            await interaction.reply('There was an error trying to skip the song.');
-        }
-    },
+  // Prefix: !skip
+  async executeMessage(message) {
+    return run({
+      reply: (payload) => message.channel.send(payload),
+    });
+  },
 };

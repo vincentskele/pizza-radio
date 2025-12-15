@@ -1,116 +1,225 @@
+// bot.js
 require('dotenv').config();
+
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  Collection,
+  ChannelType,
+} = require('discord.js');
+
 const { joinVoiceChannel } = require('@discordjs/voice');
-const { SlashCommandBuilder } = require('discord.js');
 
-// Create a new Discord client with necessary intents
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent, // If you plan to handle message-based commands
-    ]
-});
-
-// Load environment variables
+// =====================
+// ENV
+// =====================
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
-const GUILD_ID = process.env.DISCORD_GUILD_ID; // Ensure this is set in your .env
+const GUILD_ID = process.env.DISCORD_GUILD_ID;
 
-// Initialize a Collection (map) to store commands
+// Prefix for message-based commands (set in .env)
+// Example: COMMAND_PREFIX=!
+const PREFIX = process.env.COMMAND_PREFIX || '!';
+
+if (!TOKEN) console.warn('[WARN] DISCORD_BOT_TOKEN is not set.');
+if (!GUILD_ID) console.warn('[WARN] DISCORD_GUILD_ID is not set.');
+if (!VOICE_CHANNEL_ID) console.warn('[WARN] VOICE_CHANNEL_ID is not set.');
+
+// =====================
+// CLIENT
+// =====================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+
+    // Needed for prefix commands:
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+// Command collection
 client.commands = new Collection();
 
-// Path to the commands directory
+// =====================
+// LOAD COMMANDS
+// =====================
 const commandsPath = path.join(__dirname, 'commands');
+const commandFiles = fs
+  .readdirSync(commandsPath)
+  .filter((file) => file.endsWith('.js'));
 
-// Read all command files
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-
-// Dynamically set commands in the Collection
 for (const file of commandFiles) {
-    const filePath = path.join(commandsPath, file);
-    const command = require(filePath);
-    // Ensure the command has 'data' and 'execute' properties
-    if ('data' in command && 'execute' in command) {
-        client.commands.set(command.data.name, command);
-        console.log(`Loaded command: ${command.data.name}`);
-    } else {
-        console.log(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`);
-    }
+  const filePath = path.join(commandsPath, file);
+  const command = require(filePath);
+
+  if ('data' in command && 'execute' in command) {
+    client.commands.set(command.data.name, command);
+    console.log(`Loaded command: ${command.data.name}`);
+  } else {
+    console.log(
+      `[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`
+    );
+  }
 }
 
-// Function to join the voice channel
-const joinVoiceChannelHandler = () => {
-    const guild = client.guilds.cache.get(GUILD_ID);
-    if (!guild) {
-        console.error('The specified guild was not found. Please check GUILD_ID.');
-        return;
-    }
+// =====================
+// VOICE JOIN
+// =====================
+function joinVoiceChannelHandler() {
+  if (!GUILD_ID || !VOICE_CHANNEL_ID) return;
 
-    const voiceChannel = guild.channels.cache.get(VOICE_CHANNEL_ID);
-    if (!voiceChannel || voiceChannel.type !== 2) { // Type 2 is for voice channels in discord.js v14
-        console.error('The specified voice channel ID is invalid or not a voice channel.');
-        return;
-    }
+  const guild = client.guilds.cache.get(GUILD_ID);
+  if (!guild) {
+    console.error('The specified guild was not found. Please check DISCORD_GUILD_ID.');
+    return;
+  }
 
-    joinVoiceChannel({
-        channelId: VOICE_CHANNEL_ID,
-        guildId: guild.id,
-        adapterCreator: guild.voiceAdapterCreator
-    });
+  const voiceChannel = guild.channels.cache.get(VOICE_CHANNEL_ID);
+  if (!voiceChannel) {
+    console.error('The specified voice channel was not found. Please check VOICE_CHANNEL_ID.');
+    return;
+  }
 
-    console.log(`Joined voice channel: ${voiceChannel.name}`);
-};
+  // discord.js v14 voice channels are ChannelType.GuildVoice (and StageVoice exists too)
+  const isVoice =
+    voiceChannel.type === ChannelType.GuildVoice ||
+    voiceChannel.type === ChannelType.GuildStageVoice;
 
-// When the bot is ready
+  if (!isVoice) {
+    console.error('The specified VOICE_CHANNEL_ID is not a voice/stage channel.');
+    return;
+  }
+
+  joinVoiceChannel({
+    channelId: VOICE_CHANNEL_ID,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+  });
+
+  console.log(`Joined voice channel: ${voiceChannel.name}`);
+}
+
+// =====================
+// READY
+// =====================
 client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}!`);
-
-    // Join the voice channel upon connecting
-    joinVoiceChannelHandler();
+  console.log(`Logged in as ${client.user.tag}!`);
+  joinVoiceChannelHandler();
 });
 
-// Handle reconnections if disconnected
+// =====================
+// REJOIN LOGIC (optional)
+// =====================
+// Only triggers when THIS BOT is moved/disconnected from the configured channel
 client.on('voiceStateUpdate', (oldState, newState) => {
-    const wasDisconnected =
-        oldState.channelId === VOICE_CHANNEL_ID &&
-        newState.channelId !== VOICE_CHANNEL_ID;
+  if (!client.user) return;
 
-    if (wasDisconnected) {
-        console.log('Bot was disconnected. Attempting to rejoin...');
-        // disabled the automatic rejoin for now
-        // joinVoiceChannelHandler();
-    }
+  const isBot = oldState?.id === client.user.id || newState?.id === client.user.id;
+  if (!isBot) return;
+
+  const wasInTarget = oldState.channelId === VOICE_CHANNEL_ID;
+  const nowInTarget = newState.channelId === VOICE_CHANNEL_ID;
+
+  if (wasInTarget && !nowInTarget) {
+    console.log('Bot was disconnected/moved. Attempting to rejoin...');
+    // enable if you want:
+    // joinVoiceChannelHandler();
+  }
 });
 
-// Handle interaction events (e.g., slash commands)
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isCommand()) return;
+// =====================
+// SLASH COMMANDS
+// =====================
+client.on('interactionCreate', async (interaction) => {
+  // discord.js v14
+  if (!interaction.isChatInputCommand()) return;
 
-    const command = client.commands.get(interaction.commandName);
+  const command = client.commands.get(interaction.commandName);
 
-    if (!command) {
-        console.error(`No command matching ${interaction.commandName} was found.`);
-        return;
+  if (!command) {
+    console.error(`No command matching ${interaction.commandName} was found.`);
+    return;
+  }
+
+  try {
+    await command.execute(interaction);
+    console.log(`Executed slash command: ${interaction.commandName}`);
+  } catch (error) {
+    console.error(`Error executing slash command ${interaction.commandName}:`, error);
+    const payload = { content: 'There was an error executing that command!', ephemeral: true };
+
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(payload).catch(() => {});
+    } else {
+      await interaction.reply(payload).catch(() => {});
+    }
+  }
+});
+
+// =====================
+// PREFIX COMMANDS
+// =====================
+client.on('messageCreate', async (message) => {
+  try {
+    // ignore bots
+    if (message.author.bot) return;
+
+    // ignore DMs (optional)
+    if (!message.guild) return;
+
+    // Support either explicit PREFIX or mentioning the bot as a prefix:
+    //   !play ...
+    //   @Bot play ...
+    const mentionPrefix = client.user ? `<@${client.user.id}>` : null;
+    const mentionPrefixNick = client.user ? `<@!${client.user.id}>` : null;
+
+    let content = message.content;
+
+    let usedPrefix = null;
+    if (content.startsWith(PREFIX)) {
+      usedPrefix = PREFIX;
+    } else if (mentionPrefix && content.startsWith(mentionPrefix)) {
+      usedPrefix = mentionPrefix;
+    } else if (mentionPrefixNick && content.startsWith(mentionPrefixNick)) {
+      usedPrefix = mentionPrefixNick;
+    } else {
+      return; // not a prefix command
     }
 
+    // Slice prefix off and parse tokens
+    const withoutPrefix = content.slice(usedPrefix.length).trim();
+    if (!withoutPrefix) return;
+
+    const parts = withoutPrefix.split(/\s+/);
+    const commandName = (parts.shift() || '').toLowerCase();
+    const args = parts;
+
+    const command = client.commands.get(commandName);
+    if (!command) return;
+
+    // Require command files to export executeMessage for prefix usage
+    if (typeof command.executeMessage !== 'function') {
+      await message.reply(`\`${commandName}\` isn’t enabled for prefix commands yet.`);
+      return;
+    }
+
+    await command.executeMessage(message, args);
+    console.log(`Executed prefix command: ${commandName}`);
+  } catch (err) {
+    console.error('Error handling prefix command:', err);
     try {
-        await command.execute(interaction);
-        console.log(`Executed command: ${interaction.commandName}`);
-    } catch (error) {
-        console.error(`Error executing command ${interaction.commandName}:`, error);
-        if (interaction.replied || interaction.deferred) {
-            await interaction.followUp({ content: 'There was an error executing that command!', ephemeral: true });
-        } else {
-            await interaction.reply({ content: 'There was an error executing that command!', ephemeral: true });
-        }
-    }
+      await message.reply('There was an error executing that command!');
+    } catch (_) {}
+  }
 });
 
-// Log in to Discord
+// =====================
+// LOGIN
+// =====================
 client.login(TOKEN).catch((error) => {
-    console.error('Failed to log in:', error);
+  console.error('Failed to log in:', error);
 });

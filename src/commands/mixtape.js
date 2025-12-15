@@ -1,96 +1,139 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+} = require('@discordjs/voice');
 const fs = require('fs');
 const path = require('path');
-const state = require('../state'); // Import shared state
+const state = require('../state'); // shared state
 
 // Path to the "PizzaDAO Mixtape" folder
 const mixtapeFolder = path.join(__dirname, '../../songs/mixtape');
 
-// Function to shuffle an array
-const shuffleArray = (array) => {
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
+// Supported audio file extensions
+const supportedExtensions = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma'];
+
+// Shuffle helper (Fisher–Yates)
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
+function getAudioFiles(folder) {
+  return fs
+    .readdirSync(folder)
+    .filter((file) => supportedExtensions.includes(path.extname(file).toLowerCase()));
+}
+
+async function run({ member, reply, followUp }) {
+  try {
+    if (!fs.existsSync(mixtapeFolder)) {
+      return reply(
+        'The folder does not exist. Please make sure the songs are in the correct location.'
+      );
     }
-    return array;
-};
+
+    const allFiles = getAudioFiles(mixtapeFolder);
+
+    if (allFiles.length === 0) {
+      return reply(
+        'The folder is empty or contains unsupported file types. Add some songs to the folder first.'
+      );
+    }
+
+    // Must be in a voice channel
+    const voiceChannel = member?.voice?.channel;
+    if (!voiceChannel) {
+      return reply('You need to be in a voice channel to play music!');
+    }
+
+    // Shuffle and store queue (copy to avoid mutating source array)
+    state.queue = shuffleArray([...allFiles]);
+
+    // Join voice
+    state.connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: voiceChannel.guild.id,
+      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+    });
+
+    // Create player
+    state.player = createAudioPlayer();
+
+    const playNextSong = () => {
+      try {
+        if (!state.queue || state.queue.length === 0) {
+          if (typeof followUp === 'function') {
+            followUp('All songs from the mixtape have been played!');
+          }
+          try {
+            state.connection?.destroy();
+          } catch (_) {}
+          state.connection = null;
+          state.player = null;
+          return;
+        }
+
+        const nextSong = state.queue.shift();
+        const resource = createAudioResource(path.join(mixtapeFolder, nextSong));
+
+        console.log(`Playing: ${nextSong}`);
+        state.player.play(resource);
+      } catch (err) {
+        console.error('Error in playNextSong:', err);
+      }
+    };
+
+    // Prevent stacking listeners on repeated runs
+    state.player.removeAllListeners(AudioPlayerStatus.Idle);
+    state.player.removeAllListeners('error');
+
+    state.player.on(AudioPlayerStatus.Idle, playNextSong);
+
+    state.player.on('error', (error) => {
+      console.error('Error during playback:', error);
+      if (typeof followUp === 'function') {
+        followUp(`An error occurred while playing a song: ${error.message}`);
+      }
+      playNextSong();
+    });
+
+    // Subscribe + start
+    state.connection.subscribe(state.player);
+    playNextSong();
+
+    return reply('🎵 Playing songs from the PizzaDAO Mixtape folder in random order!');
+  } catch (error) {
+    console.error('Error executing the mixtape command:', error);
+    return reply('There was an error trying to play the songs.');
+  }
+}
 
 module.exports = {
-    data: new SlashCommandBuilder()
-        .setName('mixtape')
-        .setDescription('Plays songs from the PizzaDAO Mixtape folder in random order'),
+  data: new SlashCommandBuilder()
+    .setName('mixtape')
+    .setDescription('Plays songs from the PizzaDAO Mixtape folder in random order'),
 
-    async execute(interaction) {
-        try {
-            if (!fs.existsSync(mixtapeFolder)) {
-                await interaction.reply('The folder does not exist. Please make sure the songs are in the correct location.');
-                return;
-            }
+  // Slash: /mixtape
+  async execute(interaction) {
+    return run({
+      member: interaction.member,
+      reply: (payload) => interaction.reply(payload),
+      followUp: (payload) => interaction.followUp(payload),
+    });
+  },
 
-            // Supported audio file extensions
-            const supportedExtensions = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma'];
-
-            // Get all files from the mixtape folder
-            const allFiles = fs.readdirSync(mixtapeFolder).filter(file =>
-                supportedExtensions.includes(path.extname(file).toLowerCase())
-            );
-
-            if (allFiles.length === 0) {
-                await interaction.reply('The folder is empty or contains unsupported file types. Add some songs to the folder first.');
-                return;
-            }
-
-            // Shuffle the files and set the state queue
-            state.queue = shuffleArray(allFiles);
-
-            const voiceChannel = interaction.member.voice.channel;
-            if (!voiceChannel) {
-                await interaction.reply('You need to be in a voice channel to play music!');
-                return;
-            }
-
-            state.connection = joinVoiceChannel({
-                channelId: voiceChannel.id,
-                guildId: voiceChannel.guild.id,
-                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            });
-
-            state.player = createAudioPlayer();
-
-            // Function to play the next song
-            const playNextSong = () => {
-                if (state.queue.length === 0) {
-                    interaction.followUp('All songs from the mixtape have been played!');
-                    state.connection.destroy();
-                    state.connection = null;
-                    state.player = null;
-                    return;
-                }
-
-                const nextSong = state.queue.shift();
-                const resource = createAudioResource(path.join(mixtapeFolder, nextSong));
-
-                console.log(`Playing: ${nextSong}`);
-                state.player.play(resource);
-            };
-
-            // Handle player events
-            state.player.on(AudioPlayerStatus.Idle, playNextSong);
-            state.player.on('error', (error) => {
-                console.error('Error during playback:', error);
-                interaction.followUp(`An error occurred while playing the song: ${error.message}`);
-                playNextSong(); // Skip to the next song
-            });
-
-            // Subscribe the player to the connection and start playback
-            state.connection.subscribe(state.player);
-            playNextSong();
-
-            await interaction.reply('🎵 Playing songs from the PizzaDAO Mixtape folder in random order!');
-        } catch (error) {
-            console.error('Error executing the mixtape command:', error);
-            await interaction.reply('There was an error trying to play the songs.');
-        }
-    },
+  // Prefix: !mixtape
+  async executeMessage(message) {
+    return run({
+      member: message.member,
+      reply: (payload) => message.channel.send(payload),
+      followUp: (payload) => message.channel.send(payload),
+    });
+  },
 };
