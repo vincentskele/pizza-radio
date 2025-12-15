@@ -21,7 +21,7 @@ const GUILD_ID = process.env.DISCORD_GUILD_ID;
 
 // Prefix for message-based commands (set in .env)
 // Example: COMMAND_PREFIX=!
-const PREFIX = process.env.COMMAND_PREFIX || '!';
+const PREFIX = (process.env.COMMAND_PREFIX || process.env.PREFIX || '!').trim();
 
 if (!TOKEN) console.warn('[WARN] DISCORD_BOT_TOKEN is not set.');
 if (!GUILD_ID) console.warn('[WARN] DISCORD_GUILD_ID is not set.');
@@ -84,7 +84,6 @@ function joinVoiceChannelHandler() {
     return;
   }
 
-  // discord.js v14 voice channels are ChannelType.GuildVoice (and StageVoice exists too)
   const isVoice =
     voiceChannel.type === ChannelType.GuildVoice ||
     voiceChannel.type === ChannelType.GuildStageVoice;
@@ -114,7 +113,6 @@ client.once('ready', () => {
 // =====================
 // REJOIN LOGIC (optional)
 // =====================
-// Only triggers when THIS BOT is moved/disconnected from the configured channel
 client.on('voiceStateUpdate', (oldState, newState) => {
   if (!client.user) return;
 
@@ -126,7 +124,6 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 
   if (wasInTarget && !nowInTarget) {
     console.log('Bot was disconnected/moved. Attempting to rejoin...');
-    // enable if you want:
     // joinVoiceChannelHandler();
   }
 });
@@ -135,7 +132,6 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 // SLASH COMMANDS
 // =====================
 client.on('interactionCreate', async (interaction) => {
-  // discord.js v14
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);
@@ -161,12 +157,13 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // =====================
-// PREFIX COMMANDS
+// PREFIX COMMANDS (BOTS ALLOWED)
 // =====================
 client.on('messageCreate', async (message) => {
   try {
-    // ignore bots
-    if (message.author.bot) return;
+    // NOTE: We DO NOT ignore bots anymore.
+    // If you also want to allow webhooks, remove this check too.
+    if (message.webhookId) return;
 
     // ignore DMs (optional)
     if (!message.guild) return;
@@ -177,10 +174,10 @@ client.on('messageCreate', async (message) => {
     const mentionPrefix = client.user ? `<@${client.user.id}>` : null;
     const mentionPrefixNick = client.user ? `<@!${client.user.id}>` : null;
 
-    let content = message.content;
+    const content = message.content ?? '';
 
     let usedPrefix = null;
-    if (content.startsWith(PREFIX)) {
+    if (PREFIX && content.startsWith(PREFIX)) {
       usedPrefix = PREFIX;
     } else if (mentionPrefix && content.startsWith(mentionPrefix)) {
       usedPrefix = mentionPrefix;
@@ -208,7 +205,9 @@ client.on('messageCreate', async (message) => {
     }
 
     await command.executeMessage(message, args);
-    console.log(`Executed prefix command: ${commandName}`);
+    console.log(
+      `Executed prefix command: ${commandName} (from ${message.author?.tag || message.author?.id})`
+    );
   } catch (err) {
     console.error('Error handling prefix command:', err);
     try {
